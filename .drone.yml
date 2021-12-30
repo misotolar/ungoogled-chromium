@@ -1,0 +1,79 @@
+kind: pipeline
+type: docker
+name: default
+
+clone:
+  disable: true
+
+trigger:
+  event:
+  - push
+  - custom
+
+steps:
+
+- name: clone
+  image: alpine/git
+  commands:
+  - git init --quiet
+  - git remote add origin $DRONE_REMOTE_URL
+  - git fetch --quiet --depth=1 origin "+refs/heads/$DRONE_BRANCH:"
+  - git checkout --quiet $DRONE_COMMIT -b $DRONE_BRANCH
+  - git submodule update --quiet --init
+
+- name: makepkg
+  image: misotolar/makepkg
+  commands:
+  - BUILD_PATH="$DRONE_REPO_NAME" makepkg.sh
+  - sudo repo-add export/$DRONE_REPO_NAME.db.tar.gz export/*.pkg.tar.zst
+
+- name: publish
+  image: misotolar/drone-rsync
+  settings:
+    source: ./export/
+    remote:
+      from_secret: RSYNC_HOST
+    port:
+      from_secret: RSYNC_PORT
+    username:
+      from_secret: RSYNC_USERNAME
+    password:
+      from_secret: RSYNC_PASSWORD
+    target:
+      from_secret: RSYNC_TARGET
+
+---
+
+kind: pipeline
+type: docker
+name: update
+
+clone:
+  disable: true
+
+trigger:
+  event:
+  - cron
+
+steps:
+
+- name: clone
+  image: alpine/git
+  commands:
+  - git init --quiet
+  - git remote add origin $DRONE_REMOTE_URL
+  - git fetch --quiet --depth=1 origin "+refs/heads/$DRONE_BRANCH:"
+  - git checkout --quiet $DRONE_COMMIT -b $DRONE_BRANCH
+  - git submodule update --quiet --init --remote
+
+- name: version
+  image: misotolar/curl-jq
+  commands:
+  - curl -s https://aur.archlinux.org/rpc/?v=5\&type=info\&arg[]=$DRONE_REPO_NAME | jq --raw-output '.results[0].Version' > .version
+
+- name: update
+  image: alpine/git
+  commands:
+  - export VERSION=$(cat .version)
+  - git diff --quiet && git diff --quiet --staged || git commit -a -m "$DRONE_REPO_NAME $VERSION"
+  - git push origin $DRONE_BRANCH
